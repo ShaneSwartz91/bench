@@ -14,7 +14,6 @@ from bench.utils import (
 	run_frappe_cmd,
 	sudoers_file,
 	which,
-	is_valid_frappe_branch,
 )
 from bench.utils.bench import build_assets, clone_apps_from
 from bench.utils.render import job
@@ -35,7 +34,6 @@ def init(
 	skip_assets=False,
 	python="python3",
 	install_app=None,
-	dev=False,
 ):
 	"""Initialize a new bench directory
 
@@ -45,8 +43,8 @@ def init(
 	* setup config (dir/pids/redis/procfile) for the bench
 	* setup patches.txt for bench
 	* clone & install frappe
-	        * install python & node dependencies
-	        * build assets
+		* install python & node dependencies
+		* build assets
 	* setup backups crontab
 	"""
 
@@ -64,14 +62,7 @@ def init(
 	bench.setup.dirs()
 	bench.setup.logging()
 	bench.setup.env(python=python)
-	config = {}
-	if dev:
-		config["developer_mode"] = 1
-	bench.setup.config(
-		redis=not skip_redis_config_generation,
-		procfile=not no_procfile,
-		additional_config=config,
-	)
+	bench.setup.config(redis=not skip_redis_config_generation, procfile=not no_procfile)
 	bench.setup.patches()
 
 	# local apps
@@ -83,14 +74,9 @@ def init(
 	# remote apps
 	else:
 		frappe_path = frappe_path or "https://github.com/frappe/frappe.git"
-		is_valid_frappe_branch(frappe_path=frappe_path, frappe_branch=frappe_branch)
+
 		get_app(
-			frappe_path,
-			branch=frappe_branch,
-			bench_path=path,
-			skip_assets=True,
-			verbose=verbose,
-			resolve_deps=False,
+			frappe_path, branch=frappe_branch, bench_path=path, skip_assets=True, verbose=verbose
 		)
 
 		# fetch remote apps using config file - deprecate this!
@@ -100,12 +86,7 @@ def init(
 	# getting app on bench init using --install-app
 	if install_app:
 		get_app(
-			install_app,
-			branch=frappe_branch,
-			bench_path=path,
-			skip_assets=True,
-			verbose=verbose,
-			resolve_deps=False,
+			install_app, branch=frappe_branch, bench_path=path, skip_assets=True, verbose=verbose
 		)
 
 	if not skip_assets:
@@ -116,12 +97,13 @@ def init(
 
 
 def setup_sudoers(user):
-	from bench.config.lets_encrypt import get_certbot_path
-
 	if not os.path.exists("/etc/sudoers.d"):
 		os.makedirs("/etc/sudoers.d")
 
-		set_permissions = not os.path.exists("/etc/sudoers")
+		set_permissions = False
+		if not os.path.exists("/etc/sudoers"):
+			set_permissions = True
+
 		with open("/etc/sudoers", "a") as f:
 			f.write("\n#includedir /etc/sudoers.d\n")
 
@@ -135,7 +117,6 @@ def setup_sudoers(user):
 			"service": which("service"),
 			"systemctl": which("systemctl"),
 			"nginx": which("nginx"),
-			"certbot": get_certbot_path(),
 		}
 	)
 
@@ -147,7 +128,11 @@ def setup_sudoers(user):
 
 
 def start(no_dev=False, concurrency=None, procfile=None, no_prefix=False, procman=None):
-	program = which(procman) if procman else get_process_manager()
+	if procman:
+		program = which(procman)
+	else:
+		program = get_process_manager()
+
 	if not program:
 		raise Exception("No process manager found")
 
@@ -214,15 +199,3 @@ def setup_fonts():
 	os.rename(os.path.join(fonts_path, "usr_share_fonts"), "/usr/share/fonts")
 	shutil.rmtree(fonts_path)
 	exec_cmd("fc-cache -fv")
-
-def get_mariadb_pkgconfig_path() -> str:
-	import subprocess
-	return subprocess.check_output(["brew", "--prefix", "mariadb-connector-c"]).decode("utf-8").strip() + "/lib/pkgconfig"
-
-def check_pkg_config():
-	"""
-	pkg-config is required for building some python packages like libmysqlclient
-	"""
-	if shutil.which("pkg-config") is None:
-		raise Exception("pkg-config is not installed. Please install it before proceeding.\n"
-		"You can refer to https://docs.frappe.io/framework/user/en/installation")

@@ -7,7 +7,8 @@ import InvoicesPage from './components/invoices/InvoicesPage';
 import ProfitAndLossReport from './components/reports/ProfitAndLossReport';
 import BankStatementUpload from './components/banking/BankStatementUpload';
 import PayrollPage from './components/payroll/PayrollPage';
-import ExpensesPage from './components/expenses/ExpensesPage'; // Import ExpensesPage
+import ExpensesPage from './components/expenses/ExpensesPage';
+import ProductPage from './components/inventory/ProductPage'; // Import ProductPage for Inventory
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -69,6 +70,8 @@ function App() {
           <BankStatementUpload userId={session.user.id} />
           <hr style={{margin: '30px 0'}} />
           <PayrollPage userId={session.user.id} />
+          <hr style={{margin: '30px 0'}} />
+          <ProductPage userId={session.user.id} /> {/* Added Inventory/ProductPage */}
         </div>
       )}
     </div>

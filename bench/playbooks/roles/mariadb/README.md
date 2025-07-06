@@ -13,7 +13,7 @@ Debain 9
 
 ## Post install
 
-Run `mariadb-secure-installation`
+Run `mysql_secure_installation`
 
 ## Requirements
 
@@ -39,7 +39,7 @@ Configuration filename:
 mysql_conf_file: settings.cnf
 ```
 
-### Experimental unattended mariadb-secure-installation
+### Experimental unattended mysql_secure_installation
 
 ```
 ansible-playbook release.yml --extra-vars "mysql_secure_installation=true mysql_root_password=your_very_secret_password"

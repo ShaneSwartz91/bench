@@ -1,7 +1,6 @@
 # imports - standard imports
 import atexit
-from contextlib import contextmanager
-from logging import Logger
+import json
 import os
 import pwd
 import sys
@@ -15,70 +14,50 @@ from bench.bench import Bench
 from bench.commands import bench_command
 from bench.config.common_site_config import get_config
 from bench.utils import (
+	bench_cache_file,
 	check_latest_version,
 	drop_privileges,
 	find_parent_bench,
-	get_env_frappe_commands,
+	generate_command_cache,
 	get_cmd_output,
 	is_bench_directory,
 	is_dist_editable,
 	is_root,
 	log,
 	setup_logging,
-	get_cmd_from_sysargv,
+	parse_sys_argv,
 )
 from bench.utils.bench import get_env_cmd
-from importlib.util import find_spec
-
 
 # these variables are used to show dynamic outputs on the terminal
 dynamic_feed = False
 verbose = False
 is_envvar_warn_set = None
-from_command_line = False  # set when commands are executed via the CLI
+from_command_line = False # set when commands are executed via the CLI
 bench.LOG_BUFFER = []
+sys_argv = None
 
 change_uid_msg = "You should not run this command as root"
 src = os.path.dirname(__file__)
-SKIP_MODULE_TRACEBACK = ("click",)
-
-
-@contextmanager
-def execute_cmd(check_for_update=True, command: str = None, logger: Logger = None):
-	if check_for_update:
-		atexit.register(check_latest_version)
-
-	try:
-		yield
-	except BaseException as e:
-		return_code = getattr(e, "code", 1)
-
-		if isinstance(e, Exception):
-			click.secho(f"ERROR: {e}", fg="red")
-
-		if return_code:
-			logger.warning(f"{command} executed with exit code {return_code}")
-
-		raise e
 
 
 def cli():
-	setup_clear_cache()
-	global from_command_line, bench_config, is_envvar_warn_set, verbose
+	global from_command_line, bench_config, is_envvar_warn_set, verbose, sys_argv
 
 	from_command_line = True
 	command = " ".join(sys.argv)
 	argv = set(sys.argv)
 	is_envvar_warn_set = not (os.environ.get("BENCH_DEVELOPER") or os.environ.get("CI"))
 	is_cli_command = len(sys.argv) > 1 and not argv.intersection({"src", "--version"})
-	cmd_from_sys = get_cmd_from_sysargv()
+	sys_argv = parse_sys_argv()
 
-	if "--verbose" in argv:
+	if "--verbose" in sys_argv.options:
 		verbose = True
 
 	change_working_directory()
 	logger = setup_logging()
 	logger.info(command)
+	setup_clear_cache()
 
 	bench_config = get_config(".")
 
@@ -90,8 +69,8 @@ def cli():
 	if (
 		is_envvar_warn_set
 		and is_cli_command
-		and not bench_config.get("developer_mode")
 		and is_dist_editable(bench.PROJECT_NAME)
+		and not bench_config.get("developer_mode")
 	):
 		log(
 			"bench is installed in editable mode!\n\nThis is not the recommended mode"
@@ -105,36 +84,41 @@ def cli():
 	if (
 		not in_bench
 		and len(sys.argv) > 1
-		and not argv.intersection(
-			{"init", "find", "src", "drop", "get", "get-app", "--version"}
-		)
+		and not argv.intersection({"init", "find", "src", "drop", "get", "get-app", "--version"})
 		and not cmd_requires_root()
 	):
 		log("Command not being executed in bench directory", level=3)
 
-	if len(sys.argv) == 1 or sys.argv[1] == "--help":
-		print(click.Context(bench_command).get_help())
-		if in_bench:
+	if in_bench and len(sys.argv) > 1:
+		if sys.argv[1] == "--help":
+			print(click.Context(bench_command).get_help())
 			print(get_frappe_help())
-		return
+			return
 
-	_opts = [x.opts + x.secondary_opts for x in bench_command.params]
-	opts = {item for sublist in _opts for item in sublist}
+		if (
+			sys_argv.commands.intersection(get_cached_frappe_commands())
+			or sys_argv.commands.intersection(get_frappe_commands())
+		):
+			frappe_cmd()
 
-	setup_exception_handler()
+		if sys.argv[1] in Bench(".").apps:
+			app_cmd()
 
-	# handle usages like `--use-feature='feat-x'` and `--use-feature 'feat-x'`
-	if cmd_from_sys and cmd_from_sys.split("=", 1)[0].strip() in opts:
+	if not is_cli_command:
+		atexit.register(check_latest_version)
+
+	try:
 		bench_command()
+	except BaseException as e:
+		return_code = getattr(e, "code", 1)
 
-	if cmd_from_sys in bench_command.commands:
-		with execute_cmd(check_for_update=is_cli_command, command=command, logger=logger):
-			bench_command()
+		if isinstance(e, Exception):
+			click.secho(f"ERROR: {e}", fg="red")
 
-	if in_bench:
-		frappe_cmd()
+		if return_code:
+			logger.warning(f"{command} executed with exit code {return_code}")
 
-	bench_command()
+		raise e
 
 
 def check_uid():
@@ -201,11 +185,18 @@ def frappe_cmd(bench_path="."):
 	os.execv(f, [f] + ["-m", "frappe.utils.bench_helper", "frappe"] + sys.argv[1:])
 
 
+def get_cached_frappe_commands():
+	if os.path.exists(bench_cache_file):
+		command_dump = open(bench_cache_file, "r").read() or "[]"
+		return set(json.loads(command_dump))
+	return set()
+
+
 def get_frappe_commands():
 	if not is_bench_directory():
 		return set()
 
-	return set(get_env_frappe_commands())
+	return set(generate_command_cache())
 
 
 def get_frappe_help(bench_path="."):
@@ -233,35 +224,10 @@ def change_working_directory():
 
 def setup_clear_cache():
 	from copy import copy
-
 	f = copy(os.chdir)
 
 	def _chdir(*args, **kwargs):
 		Bench.cache_clear()
-		get_env_cmd.cache_clear()
 		return f(*args, **kwargs)
 
 	os.chdir = _chdir
-
-
-def setup_exception_handler():
-	from traceback import format_exception
-	from bench.exceptions import CommandFailedError
-
-	def handle_exception(exc_type, exc_info, tb):
-		if exc_type == CommandFailedError:
-			print("".join(generate_exc(exc_type, exc_info, tb)))
-		else:
-			sys.__excepthook__(exc_type, exc_info, tb)
-
-	def generate_exc(exc_type, exc_info, tb):
-		TB_SKIP = [
-			os.path.dirname(find_spec(module).origin) for module in SKIP_MODULE_TRACEBACK
-		]
-
-		for tb_line in format_exception(exc_type, exc_info, tb):
-			for skip_module in TB_SKIP:
-				if skip_module not in tb_line:
-					yield tb_line
-
-	sys.excepthook = handle_exception
